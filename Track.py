@@ -143,8 +143,8 @@ class Tracker:
 
         self.fps = _video.get(cv2.CAP_PROP_FPS)
 
-        self.frame_w = _video.get(cv2.CAP_PROP_FRAME_WIDTH)
-        self.frame_h = _video.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        self.frame_w = int(_video.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.frame_h = int(_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.camera = Camera(2000, 10, self.frame_w, self.frame_h)
 
         names = list(self.model.names.values())
@@ -167,7 +167,11 @@ class Tracker:
             def update(self, gcs):
                 boxes = gcs.boxes
 
-                ids = boxes.id.numpy().astype(np.int32) if boxes.id is not None else np.empty(0)
+                ids = (
+                    boxes.id.numpy().astype(np.int32)
+                    if boxes.id is not None
+                    else np.empty(0)
+                )
                 cls = boxes.cls.cpu().numpy()
 
                 xxyy = boxes.xyxy
@@ -221,7 +225,7 @@ class Tracker:
                 if np.shape(track.speed) == (2,):
                     speed = np.linalg.norm(track.speed)
                     speed = np.round(speed, 0)
-                    
+
                     xy = track.xyxy[[0, 3]].numpy().astype(np.int32)
                     annotator.text(
                         xy,
@@ -230,7 +234,16 @@ class Tracker:
                         box_style=True,
                     )
 
+                    xy[1] -= 20
+                    annotator.text(
+                        xy,
+                        f"coord: [{int(track.last_coord[0])}, {int(track.last_coord[1])}]",
+                        txt_color=colors(0, True),
+                        box_style=True,
+                    )
+
         res = annotator.result()
+
         if show:
             cv2.imshow("result", res)
             cv2.waitKey(1)
@@ -239,5 +252,14 @@ class Tracker:
 
 tracker = Tracker("Video.mp4")
 
+save_path = "Saved.mp4"
+writer = cv2.VideoWriter(
+    save_path,
+    cv2.VideoWriter_fourcc(*"mp4v"),
+    tracker.fps,
+    (tracker.frame_w, tracker.frame_h),
+)
+
 for tracks in tracker.result():
-    tracker.plot()
+    plotted = tracker.plot()
+    writer.write(plotted)
