@@ -164,7 +164,7 @@ class Tracker:
         self.fps = _video.get(cv2.CAP_PROP_FPS)
 
         self.frame_w = int(_video.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_h = int(_video.video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.frame_h = int(_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.camera = Camera(
             height=2.046,
             pitch=np.rad2deg(0.2888),
@@ -287,7 +287,7 @@ class Tracker:
         return res
 
 
-tracker = Tracker("terrace1-c0.avi")
+tracker = Tracker("Video.mp4")
 
 save_path = "Saved.mp4"
 writer = cv2.VideoWriter(
