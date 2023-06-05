@@ -8,27 +8,45 @@ from ultralytics import YOLO
 
 class Camera:
     def __init__(
-        self, height, pitch, pix_w, pix_h, f=5.43, cmos_w=7.44, cmos_h=5.58
+        self,
+        height,
+        pitch,
+        pix_w,
+        pix_h,
+        origin_x=None,
+        origin_y=None,
+        f=5.43,
+        dx=None,
+        dy=None,
+        cmos_w=7.44,
+        cmos_h=5.58,
     ) -> None:
         """
         Create a camera object
 
         Args:
-            height (float): camera's distance from floor in millimeter
+            height (float): camera's distance from floor in meter
             pitch (float): camera's pitch angle in degree
             pix_w (float): how many pixel in width
             pix_h (float): how many pixel in height
+            origin_x (float): origin x in pixel
+            origin_y (float): origin y in pixel
             f (float): focal length in millimeter
+            dx (float): pixel width in millimeter
+            dy (float): pixel height in millimeter
             cmos_w (float): cmos width in millimeter
             cmos_h (float): cmos length in millimeter
         """
-        self.f = f
+        origin_x = origin_x or pix_w / 2
+        origin_y = origin_y or pix_h / 2
+
+        self.f = f / 1000
         # millimeter per pixel
-        self.dx = cmos_w / pix_w
-        self.dy = cmos_h / pix_h
+        self.dx = (dx or cmos_w / pix_w) / 1000
+        self.dy = (dx or cmos_h / pix_h) / 1000
         # Image Origin in pixel
-        self.origin_w = pix_w / 2
-        self.origin_h = pix_h / 2
+        self.origin_x = origin_x
+        self.origin_y = origin_y
         self.height = height
         self.pitch = np.deg2rad(pitch)
 
@@ -43,8 +61,8 @@ class Camera:
             gc_xy: ground coord
         """
         # Relocate origin
-        wi = xy[:, 0] - self.origin_w
-        hi = xy[:, 1] - self.origin_h
+        wi = xy[:, 0] - self.origin_x
+        hi = xy[:, 1] - self.origin_y
         # Angle between optical y-axis and imaging point ray
         beta = torch.atan(hi * self.dy / self.f)
         # Evaluate ground coord
@@ -90,8 +108,8 @@ class GroundCoordBoxes:
 
         self.boxes = boxes
 
-        xy = pixel_ground_coord(self.boxes.xyxy)
-        self.coords = camera.to_ground_coord(xy)
+        self.pix_gcs = pixel_ground_coord(self.boxes.xyxy)
+        self.coords = camera.to_ground_coord(self.pix_gcs)
 
 
 class TrackResult:
@@ -105,17 +123,19 @@ class TrackResult:
         self.interval = 1 / fps
 
         self.last_coord = None
+        self.last_pix_gc = None
         self.last_xyxy = None
         # Speed filter cache
         self.speeds = deque(maxlen=int(fps * window))
 
-    def update(self, xyxy, coord):
+    def update(self, xyxy, coord, pix_gc):
         self.last_xyxy = xyxy
 
         if self.last_coord is not None:
             speed = (coord - self.last_coord) / self.interval
             self.speeds.append(speed.numpy())
         self.last_coord = coord
+        self.last_pix_gc = pix_gc
 
         return self
 
@@ -144,8 +164,18 @@ class Tracker:
         self.fps = _video.get(cv2.CAP_PROP_FPS)
 
         self.frame_w = int(_video.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.frame_h = int(_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.camera = Camera(2000, 10, self.frame_w, self.frame_h)
+        self.frame_h = int(_video.video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.camera = Camera(
+            height=2.046,
+            pitch=np.rad2deg(0.2888),
+            pix_w=self.frame_w,
+            pix_h=self.frame_h,
+            origin_x=366.51,
+            origin_y=305.83,
+            dx=0.023,
+            dy=0.023,
+            f=20.1619,
+        )
 
         names = list(self.model.names.values())
         self.pre_result = self.model.track(
@@ -176,14 +206,15 @@ class Tracker:
 
                 xxyy = boxes.xyxy
                 coords = gcs.coords
+                pix_gcs = gcs.pix_gcs
 
-                for id, cl, xyxy, coord in zip(ids, cls, xxyy, coords):
+                for id, cl, xyxy, coord, pix_gc in zip(ids, cls, xxyy, coords, pix_gcs):
                     track = (
                         self.tracks[id]
                         if id in self.tracks
                         else TrackResult(id, result.names[cl], self.fps)
                     )
-                    self.tracks[id] = track.update(xyxy, coord)
+                    self.tracks[id] = track.update(xyxy, coord, pix_gc)
 
                 # Remove tracks that no more exist in current frame
                 self.tracks = dict(
@@ -213,34 +244,40 @@ class Tracker:
         """
         from copy import deepcopy
 
-        from ultralytics.yolo.utils.plotting import Annotator, colors
+        from ultralytics.yolo.utils.plotting import Annotator, Colors
 
         annotator = Annotator(deepcopy(self.orig_img), line_width, font_size, font)
 
+        red = Colors.hex2rgb("#0033FF")
+        blue = Colors.hex2rgb("#FF3838")
         if boxes:
             for track in self.tracks.values():
                 label = str(track)
-                annotator.box_label(track.xyxy.squeeze(), label, color=colors(0, True))
+                annotator.box_label(track.xyxy.squeeze(), label, color=blue)
 
                 if np.shape(track.speed) == (2,):
                     speed = np.linalg.norm(track.speed)
-                    speed = np.round(speed, 0)
 
                     xy = track.xyxy[[0, 3]].numpy().astype(np.int32)
                     annotator.text(
                         xy,
-                        f"speed: {speed}",
-                        txt_color=colors(0, True),
+                        f"speed: {speed:.2f}",
+                        txt_color=blue,
                         box_style=True,
                     )
 
                     xy[1] -= 20
                     annotator.text(
                         xy,
-                        f"coord: [{int(track.last_coord[0])}, {int(track.last_coord[1])}]",
-                        txt_color=colors(0, True),
+                        f"coord: [{track.last_coord[0]:.2f}, {track.last_coord[1]:.2f}]",
+                        txt_color=blue,
                         box_style=True,
                     )
+
+                    p1 = track.last_pix_gc
+                    p2 = track.last_pix_gc + 5
+                    xyxy = torch.hstack((p1, p2)).numpy().astype(np.int32)
+                    annotator.box_label(xyxy, color=red)
 
         res = annotator.result()
 
@@ -250,7 +287,7 @@ class Tracker:
         return res
 
 
-tracker = Tracker("Video.mp4")
+tracker = Tracker("terrace1-c0.avi")
 
 save_path = "Saved.mp4"
 writer = cv2.VideoWriter(
